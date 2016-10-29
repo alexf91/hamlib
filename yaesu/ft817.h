@@ -102,6 +102,7 @@ enum ft817_native_cmd_e {
 	FT817_NATIVE_CAT_SET_DCS_CODE,
 	FT817_NATIVE_CAT_GET_RX_STATUS,
 	FT817_NATIVE_CAT_GET_TX_STATUS,
+	FT817_NATIVE_CAT_GET_TX_METERS,
 	FT817_NATIVE_CAT_GET_FREQ_MODE_STATUS,
 	FT817_NATIVE_CAT_PWR_WAKE,
 	FT817_NATIVE_CAT_PWR_ON,
@@ -124,6 +125,10 @@ struct ft817_priv_data {
 	/* tx status */
 	struct timeval tx_status_tv;
 	unsigned char tx_status;
+
+    /* tx meters */
+	struct timeval tx_meters_tv;
+	unsigned short tx_meters;
 
 	/* freq & mode status */
 	struct timeval fm_status_tv;

@@ -109,6 +109,7 @@ static const yaesu_cmd_set_t ncmd[] = {
 	{ 0, { 0x00, 0x00, 0x00, 0x00, 0x0c } }, /* set DCS code */
 	{ 1, { 0x00, 0x00, 0x00, 0x00, 0xe7 } }, /* get RX status  */
 	{ 1, { 0x00, 0x00, 0x00, 0x00, 0xf7 } }, /* get TX status  */
+	{ 1, { 0x00, 0x00, 0x00, 0x00, 0xbd } }, /* get TX meters  */
 	{ 1, { 0x00, 0x00, 0x00, 0x00, 0x03 } }, /* get FREQ and MODE status */
 	{ 1, { 0x00, 0x00, 0x00, 0x00, 0x00 } }, /* pwr wakeup sequence */
 	{ 1, { 0x00, 0x00, 0x00, 0x00, 0x0f } }, /* pwr on */
@@ -181,7 +182,7 @@ const struct rig_caps ft817_caps = {
 	.retry =               0,
 	.has_get_func =        RIG_FUNC_NONE,
 	.has_set_func =        RIG_FUNC_LOCK | RIG_FUNC_TONE | RIG_FUNC_TSQL,
-	.has_get_level =       RIG_LEVEL_STRENGTH | RIG_LEVEL_RAWSTR | RIG_LEVEL_RFPOWER,
+	.has_get_level =       RIG_LEVEL_STRENGTH | RIG_LEVEL_RAWSTR | RIG_LEVEL_RFPOWER | RIG_LEVEL_ALC | RIG_LEVEL_SWR,
 	.has_set_level =       RIG_LEVEL_NONE,
 	.has_get_parm =        RIG_PARM_NONE,
 	.has_set_parm =        RIG_PARM_NONE,
@@ -401,6 +402,8 @@ static int ft817_get_status(RIG *rig, int status)
 	struct ft817_priv_data *p = (struct ft817_priv_data *) rig->state.priv;
 	struct timeval *tv;
 	unsigned char *data;
+    unsigned char first;
+    unsigned char second;
 	int len;
 	int n;
 
@@ -420,6 +423,11 @@ static int ft817_get_status(RIG *rig, int status)
 		len  = 1;
 		tv   = &p->tx_status_tv;
 		break;
+    case FT817_NATIVE_CAT_GET_TX_METERS:
+        data = &first;
+        len = 1;
+		tv   = &p->tx_meters_tv;
+        break;
 	default:
 		rig_debug(RIG_DEBUG_ERR, "ft817_get_status: Internal error!\n");
 		return -RIG_EINTERNAL;
@@ -441,6 +449,24 @@ static int ft817_get_status(RIG *rig, int status)
 
     p->fm_status[5] >>= 5;
   }
+
+    if (status == FT817_NATIVE_CAT_GET_TX_METERS) {
+        // Check if the first byte contains BCD encoded numbers
+        if ((first & 0xF) < 10 && ((first >> 4) < 10)) {
+            if ((n = read_block(&rig->state.rigport, (char *) &second, 1)) < 0)
+                return n;
+
+            if (n != 1)
+                return -RIG_EIO;
+
+            // My version of the FT817 returns (pwr, alc) in the first byte and
+            // (swr, mod) in the second byte
+            p->tx_meters = (first << 8) | second;
+        }
+        else {
+            p->tx_meters = 0x0000;
+        }
+    }
 
 	gettimeofday(tv, NULL);
 
@@ -651,6 +677,42 @@ static int ft817_get_raw_smeter_level(RIG *rig, value_t *val)
 }
 
 
+static int ft817_get_alcmeter_level(RIG *rig, value_t *val)
+{
+	struct ft817_priv_data *p = (struct ft817_priv_data *) rig->state.priv;
+	int n;
+
+	if (check_cache_timeout(&p->tx_meters_tv))
+		if ((n = ft817_get_status(rig, FT817_NATIVE_CAT_GET_TX_METERS)) < 0)
+			return n;
+
+    // We discard readbacks in RX mode in ft817_get_status, so there's no need
+    // to check the TX status again. The ALC readout is in the lower nibble of
+    // the highest byte.
+    val->f = ((p->tx_meters & 0x0F00) >> 8) / 10.0;
+
+	return RIG_OK;
+}
+
+
+static int ft817_get_swrmeter_level(RIG *rig, value_t *val)
+{
+	struct ft817_priv_data *p = (struct ft817_priv_data *) rig->state.priv;
+	int n;
+
+	if (check_cache_timeout(&p->tx_meters_tv))
+		if ((n = ft817_get_status(rig, FT817_NATIVE_CAT_GET_TX_METERS)) < 0)
+			return n;
+
+    // We discard readbacks in RX mode in ft817_get_status, so there's no need
+    // to check the TX status again. The SWR readout is in the higher nibble of
+    // the lower byte.
+    val->f = ((p->tx_meters & 0x00F0) >> 4) / 10.0;
+
+	return RIG_OK;
+}
+
+
 int ft817_get_level (RIG *rig, vfo_t vfo, setting_t level, value_t *val)
 {
 	if (vfo != RIG_VFO_CURR)
@@ -669,6 +731,14 @@ int ft817_get_level (RIG *rig, vfo_t vfo, setting_t level, value_t *val)
 
 	case RIG_LEVEL_RFPOWER:
 		return ft817_get_pometer_level(rig, val);
+        break;
+
+    case RIG_LEVEL_ALC:
+        return ft817_get_alcmeter_level(rig, val);
+        break;
+
+    case RIG_LEVEL_SWR:
+        return ft817_get_swrmeter_level(rig, val);
         break;
 
 	default:
